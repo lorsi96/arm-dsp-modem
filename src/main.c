@@ -36,7 +36,7 @@
 #define UART_BAUDRATE 460800
 
 /* ***************************** Data Transfer ***************************** */
-const uint16_t DATA_IN_RESET = 1024;
+const uint16_t DATA_IN_RESET =1024;
 static struct header_struct {
     char head[4];
     uint32_t id;
@@ -135,7 +135,7 @@ uint16_t dac_sample = 512;
 
 /* ***************************** Data Input Sim **************************** */
 bool data_in = false;
-uint16_t data_in_count = 0;
+uint16_t data_in_count = DATA_IN_RESET;
 
 /* ***************************** Filter Coeffs ***************************** */
 q15_t sq_coeffs[] = {
@@ -164,7 +164,7 @@ int main(void) {
         uartWriteByteArray(UART_USB, (uint8_t*)&adc_sample, sizeof(adc_sample));
 
         /* Handle data in */
-        data_in_count = (data_in_count + 1) % DATA_IN_RESET;
+        data_in_count = data_in_count - 1;
         if (data_in_count == 0) {
             data_in_count = DATA_IN_RESET;
             uartWriteByteArray(UART_USB, (uint8_t*)&header, sizeof(header));
@@ -182,7 +182,6 @@ int main(void) {
         }
 
         if (modulator_is_data_valid(&mod)) {
-            header.dbg1++;
             dacWrite(DAC, (modulator_get_out_sample(&mod) >> 6) + 512);
         }
 

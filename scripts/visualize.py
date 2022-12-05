@@ -97,8 +97,14 @@ def update(t):
     fftLn.set_data ( (fs/N )*fs*time ,fft)
 
     rec=np.concatenate((rec,((adc/1.65)*2**(15-1)).astype(np.int16)))
-    d = bytearray([int(15 * np.random.random())])
-    streamFile.write(d)
+    clean = False
+    with open('./scripts/comms.txt', 'rt') as f:
+        for l in f.readline():
+            streamFile.write(l.encode())
+            clean = True
+    if clean:
+        with open('./scripts/comms.txt', 'w'):
+            pass
     return adcLn, fftLn
 
 #seleccionar si usar la biblioteca pyserial o leer desde un archivo log.bin
