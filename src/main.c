@@ -35,6 +35,19 @@
 
 #define UART_BAUDRATE 460800
 
+/* ***************************** Data Transfer ***************************** */
+const uint16_t DATA_IN_RESET = 1024;
+static struct header_struct {
+    char head[4];
+    uint32_t id;
+    uint16_t N;
+    uint16_t fs;
+    uint16_t dbg1;
+    uint16_t dbg2;
+    uint16_t dbg3;
+    char tail[4];
+} header = {"head", 0, DATA_IN_RESET, PROG_LOOP_HZ, 0, 0, 0, "tail"};
+
 /* ********************************* System ******************************** */
 static enum modem_error_t {
     MODEM_ERR_OK = 0,
@@ -55,7 +68,20 @@ void modulator_init(struct modulator_t* self, q15_t* filter_coeffs) {
     self->filter_coeffs = filter_coeffs;
     self->buff_i = 0;
     self->out_i = 0;
+
+    /* Create Preamble and SFD.*/
+    bool reverse = false;
+    bool bit = true;
+    for(;self->buff_i<MODEM_PRE_BITS; self->buff_i++) {
+        if(self->buff_i == (MODEM_PRE_BITS - MODEM_SFD)) {
+            reverse = true;
+        }
+        self->mapped_data[MOD_SYMB_LEN_BITS * self->buff_i] = (bit ^ reverse) ? 0x7FFF : 0x8000;  
+        bit = !bit;
+    }
 }
+
+
 
 void modulator_data_add(struct modulator_t* self, bool bit) {
     if (self->buff_i >= MOD_SYMB_LEN_BITS) {
@@ -66,6 +92,12 @@ void modulator_data_add(struct modulator_t* self, bool bit) {
     self->buff_i++;
 }
 
+void modulator_send_by(struct modulator_t* self, uint8_t byte) {
+    for(uint8_t i=0; i < 8; i++) {
+        modulator_data_add(self, (byte >> i) & 0b1);
+    }
+}
+
 void __modulator_filter_data(struct modulator_t* self) {
     arm_conv_q15(self->mapped_data, MOD_BUFFER_LEN, 
                  self->filter_coeffs, MOD_RRC_SZ, self->filtered_data);
@@ -73,6 +105,10 @@ void __modulator_filter_data(struct modulator_t* self) {
 
 bool modulator_is_data_valid(struct modulator_t* self) {
     return self->buff_i == MOD_SYMB_LEN_BITS;
+}
+
+bool modulator_is_rfd(struct modulator_t* self) {
+    return self->out_i == 0;
 }
 
 q15_t modulator_get_out_sample(struct modulator_t* self) {
@@ -87,7 +123,7 @@ q15_t modulator_get_out_sample(struct modulator_t* self) {
     ret = self->filtered_data[self->out_i];
     if (++self->out_i == MOD_FILT_DATA_SZ) {
         self->out_i = 0;
-        self->buff_i = 0;  // Ready to receive more data.
+        self->buff_i = MODEM_PRE_BITS;  // Ready to receive more data.
     }
     return ret;
 }
@@ -99,7 +135,6 @@ uint16_t dac_sample = 512;
 
 /* ***************************** Data Input Sim **************************** */
 bool data_in = false;
-const uint16_t DATA_IN_RESET = 1024;
 uint16_t data_in_count = 0;
 
 /* ***************************** Filter Coeffs ***************************** */
@@ -108,17 +143,6 @@ q15_t sq_coeffs[] = {
     0x2000, 0x2000, 0x2000, 0x2000, 0x2000, 0x2000, 0x2000, 0x2000,
 };
 
-/* ***************************** Data Transfer ***************************** */
-static struct header_struct {
-    char head[4];
-    uint32_t id;
-    uint16_t N;
-    uint16_t fs;
-    uint16_t dbg1;
-    uint16_t dbg2;
-    uint16_t dbg3;
-    char tail[4];
-} header = {"head", 0, DATA_IN_RESET, PROG_LOOP_HZ, 0, 0, 0, "tail"};
 
 /* ************************************************************************* */
 /*                                    Code                                   */
@@ -143,21 +167,23 @@ int main(void) {
         data_in_count = (data_in_count + 1) % DATA_IN_RESET;
         if (data_in_count == 0) {
             data_in_count = DATA_IN_RESET;
-            modulator_data_add(&mod, data_in);
-            data_in = !data_in;
             uartWriteByteArray(UART_USB, (uint8_t*)&header, sizeof(header));
             header.dbg1 = 0;
             header.dbg2 = 0;
             header.dbg3 = 0;
         }
 
-        /* Modulator */
+        if(modulator_is_rfd(&mod)) {
+            uint8_t recv_by;
+            if (uartReadByte(UART_USB, &recv_by)) {
+                header.dbg3 = recv_by;
+                modulator_send_by(&mod, recv_by);
+            }
+        }
+
         if (modulator_is_data_valid(&mod)) {
             header.dbg1++;
             dacWrite(DAC, (modulator_get_out_sample(&mod) >> 6) + 512);
-        } else {
-            header.dbg2++;
-            dacWrite(DAC, 512);  // a.k.a 0
         }
 
         while (cyclesCounterRead() < PROG_FREQ_CYCLES)

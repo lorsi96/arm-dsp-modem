@@ -37,7 +37,7 @@ def findHeader(f,h):
         h["fs"] = readInt4File(f)
         h["dbg1"] = readInt4File(f) 
         h["dbg2"] = readInt4File(f) 
-        h["dbg3"] = readInt4File(f) 
+        h["dbg3"] = f"0b{readInt4File(f):b}" 
 
         data=bytearray(b'1234')
         for i in range(4):
@@ -97,6 +97,8 @@ def update(t):
     fftLn.set_data ( (fs/N )*fs*time ,fft)
 
     rec=np.concatenate((rec,((adc/1.65)*2**(15-1)).astype(np.int16)))
+    d = bytearray([int(15 * np.random.random())])
+    streamFile.write(d)
     return adcLn, fftLn
 
 #seleccionar si usar la biblioteca pyserial o leer desde un archivo log.bin
