@@ -1,0 +1,3 @@
+[submodule "ciaa-tools"]
+	path = ciaa-tools
+	url = git@github.com:lorsi96/EDU-CIAA-Docker.git
