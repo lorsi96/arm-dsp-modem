@@ -21,8 +21,8 @@ def stdint_read(f:BinaryIO, size_bytes=2, signed=False) -> int:
 
 # ****************************** Serial Manager ***************************** #
 class SerialHeaderManager:
-    HEAD = b"head"
-    TAIL = b"tail"
+    HEAD = b'head'
+    TAIL = b'tail'
     def __init__(self, file:BinaryIO, spec: HeaderSpec, def_packet:Header) -> None:
         self._file = file 
         self._spec = spec 
@@ -37,8 +37,10 @@ class SerialHeaderManager:
         ret: Dict[str, Any] = {"head": SerialHeaderManager.HEAD}
         while not found:
             self.__find_head()
+            print('Packet found!')
             for key, parser in self._spec.items():
                 ret.update({key: parser(self._file)})
+            print(ret)
             found = self.__find_tail()
         self._last_packet = ret
         print(self._last_packet)
@@ -50,14 +52,12 @@ class SerialHeaderManager:
 
     def __find_head(self):
         data=bytearray(len(SerialHeaderManager.HEAD))
+        print(data)
         while data!=SerialHeaderManager.HEAD:
-            data+=self._file.read(1)
-            print('---')
-            print(bytearray(SerialHeaderManager.HEAD))
-            print(str(data))
-            print('---')
+            raw=self._file.read(1)
+            data+=raw
             data[:]=data[-4:]
-    
+        self._file.read(2)  # Terminator.
     def __find_tail(self):
         data=bytearray(b'1234')
         for _ in range(4):
@@ -152,6 +152,7 @@ if __name__ == '__main__':
     try:
         while True:
             serial_manager.wait_for_packet()
+            print('Hi packet')
     except KeyboardInterrupt:
         pass
     finally:
