@@ -1,9 +1,10 @@
 #!python3
 import numpy as np
 import matplotlib.pyplot as plt
+import functools
 from   matplotlib.animation import FuncAnimation
 import io
-from typing import Mapping, Any, Callable, BinaryIO, Dict, List, Tuple
+from typing import Mapping, Any, Callable, BinaryIO, Dict, List, Tuple, Protocol
 import serial
 
 STREAM_FILE=("/dev/ttyUSB1", "serial")
@@ -11,13 +12,44 @@ HeaderSpec = Mapping[str, Callable[[BinaryIO], int]]
 Header = Mapping[str, Any]
 SerialData = Tuple[Header, List[float]]
 
-
 # ********************************* Parsers ********************************* #
 def stdint_read(f:BinaryIO, size_bytes=2, signed=False) -> int:
     raw = bytes()
     for _ in range(size_bytes):
         raw += f.read(1)
     return int.from_bytes(raw, "little", signed=signed)
+
+# ********************************* Streams ********************************* #
+class Streamable(Protocol):
+    def open(self) -> BinaryIO:
+        ...
+    
+    def flush(self):
+        ...
+
+class SerialStreamable(Streamable):
+    def __init__(self, port:str='/dev/ttyUSB1') -> None:
+        self.port = port
+    
+    def open(self) -> BinaryIO:
+        self.f = serial.Serial(port=self.port, baudrate=460800, timeout=None)
+        return self.f  # type: ignore
+    
+    def flush(self):
+        self.f.flushInput()
+
+class FileStreamable(Streamable):
+    def __init__(self, sz_bytes, filepath:str='serial') -> None:
+        self.fpath = filepath
+        self.sz = sz_bytes
+
+    def open(self) -> BinaryIO:
+        self.f = open(self.fpath, "rb", 0)
+        self.flush()
+        return self.f
+    
+    def flush(self):
+        self.f.seek(2*self.sz, io.SEEK_END)
 
 # ****************************** Serial Manager ***************************** #
 class SerialHeaderManager:
@@ -37,13 +69,10 @@ class SerialHeaderManager:
         ret: Dict[str, Any] = {"head": SerialHeaderManager.HEAD}
         while not found:
             self.__find_head()
-            print('Packet found!')
             for key, parser in self._spec.items():
                 ret.update({key: parser(self._file)})
-            print(ret)
             found = self.__find_tail()
         self._last_packet = ret
-        print(self._last_packet)
         return ret
     
     def __read_data(self) -> List[float]:
@@ -52,12 +81,10 @@ class SerialHeaderManager:
 
     def __find_head(self):
         data=bytearray(len(SerialHeaderManager.HEAD))
-        print(data)
         while data!=SerialHeaderManager.HEAD:
             raw=self._file.read(1)
             data+=raw
             data[:]=data[-4:]
-        self._file.read(2)  # Terminator.
     def __find_tail(self):
         data=bytearray(b'1234')
         for _ in range(4):
@@ -90,7 +117,7 @@ header = {
 }
 
 header_spec = {
-    "id": stdint_read, 
+    "id": functools.partial(stdint_read, size_bytes=4), 
     "N": stdint_read, 
     "fs": stdint_read, 
     "dgb1": stdint_read, 
@@ -99,21 +126,12 @@ header_spec = {
 }
 
 
-def flushStream(f,h):
-    if(STREAM_FILE[1]=="serial"): #pregunto si estoy usando la bibioteca pyserial o un file
-        f.flushInput()
-    else:
-        f.seek ( 2*h["N"],io.SEEK_END)
-
-if(STREAM_FILE[1]=="serial"):
-    streamFile = serial.Serial(port=STREAM_FILE[0],baudrate=460800,timeout=None)
-else:
-    streamFile=open(STREAM_FILE[0], "rb", 0)
-    flushStream(streamFile, header)
-
-serial_manager = SerialHeaderManager(streamFile, header_spec, header)
+stream = SerialStreamable()
+stream_file = stream.open()
+serial_manager = SerialHeaderManager(stream_file, header_spec, header)
 
 rec=np.ndarray(1).astype(np.int16)
+
 def init():
     global rec
     rec=np.ndarray(1).astype(np.int16)
@@ -123,12 +141,13 @@ def update(t):
     global header,rec
     found_h, raw_data = serial_manager.wait_for_packet() 
     id, N, fs = found_h["id"], found_h["N"], found_h["fs"]
+    print(found_h)
     
     adc   = np.array(raw_data)
     time  = np.arange(0, N/fs, 1/fs)
 
-#    adcAxe.set_xlim ( 0    ,N/fs )
-#    adcLn.set_data  ( time ,adc  )
+    adcAxe.set_xlim ( 0    ,N/fs )
+    adcLn.set_data  ( time ,adc  )
 
     fft=np.abs (1 / N * np.fft.fft(adc))**2
     fftAxe.set_ylim (0, np.max(fft)+0.05)
@@ -136,29 +155,22 @@ def update(t):
     fftLn.set_data ( (fs/N )*fs*time ,fft)
 
     rec=np.concatenate((rec,((adc/1.65)*2**(15-1)).astype(np.int16)))
+
     clean = False
     with open('./scripts/comms.txt', 'rt') as f:
         for l in f.readline():
-            streamFile.write(l.encode())
+            stream_file.write(l.encode())
             clean = True
     if clean:
         with open('./scripts/comms.txt', 'w'):
             pass
+
     return adcLn, fftLn
 
-#seleccionar si usar la biblioteca pyserial o leer desde un archivo log.bin
 
 if __name__ == '__main__':
-    try:
-        while True:
-            serial_manager.wait_for_packet()
-            print('Hi packet')
-    except KeyboardInterrupt:
-        pass
-    finally:
-        streamFile.close()
-else:
     ani=FuncAnimation(fig, update, 128, init_func=init, blit=True, interval=1, 
                     repeat=True)
     plt.draw()
     plt.show()
+    stream_file.close()
