@@ -10,7 +10,7 @@ import serial
 STREAM_FILE=("/dev/ttyUSB1", "serial")
 HeaderSpec = Mapping[str, Callable[[BinaryIO], int]]
 Header = Mapping[str, Any]
-SerialData = Tuple[Header, List[float]]
+SerialData = Tuple[Header, List[float], List[float]]
 
 # ********************************* Parsers ********************************* #
 def stdint_read(f:BinaryIO, size_bytes=2, signed=False) -> int:
@@ -59,10 +59,12 @@ class SerialHeaderManager:
         self._file = file 
         self._spec = spec 
         self._last_packet = def_packet
-        self._data = np.zeros(self._last_packet['N'])
     
     def wait_for_packet(self) -> SerialData:
-        return (self.__find_header(), self.__read_data()) 
+        return (
+            self.__find_header(), 
+            self.__read_data(self._last_packet['N']),
+            self.__read_data(self._last_packet['Ndbg'])) 
     
     def __find_header(self) -> Mapping[str, Any]:
         found = False 
@@ -75,9 +77,9 @@ class SerialHeaderManager:
         self._last_packet = ret
         return ret
     
-    def __read_data(self) -> List[float]:
+    def __read_data(self, n:int) -> List[float]:
         parse = lambda: stdint_read(self._file, signed=True) / 0xFFFF * 1.65
-        return [parse() for _ in range(self._last_packet['N'])]
+        return [parse() for _ in range(n)]
 
     def __find_head(self):
         data=bytearray(len(SerialHeaderManager.HEAD))
@@ -109,6 +111,7 @@ header = {
     "head": b"head", 
     "id": 0, 
     "N":1024, 
+    "Ndbg": 273,
     "fs": 8000, 
     "dgb1": 0, 
     "dgb2": 0, 
@@ -119,6 +122,7 @@ header = {
 header_spec = {
     "id": functools.partial(stdint_read, size_bytes=4), 
     "N": stdint_read, 
+    "Ndbg": stdint_read, 
     "fs": stdint_read, 
     "dgb1": stdint_read, 
     "dgb2": stdint_read, 
@@ -139,20 +143,22 @@ def init():
 
 def update(t):
     global header,rec
-    found_h, raw_data = serial_manager.wait_for_packet() 
+    found_h, raw_data, dbg_data = serial_manager.wait_for_packet() 
     id, N, fs = found_h["id"], found_h["N"], found_h["fs"]
     print(found_h)
     
     adc   = np.array(raw_data)
     time  = np.arange(0, N/fs, 1/fs)
 
+    dbg = np.array(dbg_data)
+    time2 = np.arange(len(dbg_data))
+
     adcAxe.set_xlim ( 0    ,N/fs )
     adcLn.set_data  ( time ,adc  )
 
-    fft=np.abs (1 / N * np.fft.fft(adc))**2
-    fftAxe.set_ylim (0, np.max(fft)+0.05)
-    fftAxe.set_xlim (0 ,fs/2 )
-    fftLn.set_data ( (fs/N )*fs*time ,fft)
+    fftAxe.set_xlim (0 , time2[-1])
+    fftAxe.set_ylim (np.min(dbg) * 1.05, np.max(dbg) * 1.05)
+    fftLn.set_data (time2, dbg)
 
     rec=np.concatenate((rec,((adc/1.65)*2**(15-1)).astype(np.int16)))
 

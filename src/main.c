@@ -43,12 +43,13 @@ static struct header_struct {
     char head[4];
     uint32_t id;
     uint16_t N;
+    uint16_t Ndbg;
     uint16_t fs;
     uint16_t dbg1;
     uint16_t dbg2;
     uint16_t dbg3;
     char tail[4];
-} header = {"head", 0, DATA_IN_RESET, PROG_LOOP_HZ, 0, 0, 0, "tail"};
+} header = {"head", 0, DATA_IN_RESET, MOD_FILT_DATA_SZ, PROG_LOOP_HZ, 0, 0, 0, "tail"};
 
 /* ********************************* System ******************************** */
 static enum modem_error_t {
@@ -252,6 +253,10 @@ int main(void) {
         data_in_count = data_in_count - 1;
         if (data_in_count == 0) {
             data_in_count = DATA_IN_RESET;
+            uartWriteByteArray(UART_USB, 
+                          (uint8_t*)&mod.filtered_data, 
+                          sizeof(mod.filtered_data));
+            header.Ndbg = sizeof(mod.filtered_data) / sizeof(mod.filtered_data[0]);
             uartWriteByteArray(UART_USB, (uint8_t*)&header, sizeof(header));
             header.dbg1 = 0;
             header.dbg2 = 0;
