@@ -36,7 +36,7 @@ def findHeader(f,h):
         h["N" ] = readInt4File(f)
         h["fs"] = readInt4File(f)
         h["dbg1"] = readInt4File(f) 
-        h["dbg2"] = readInt4File(f) 
+        h["dbg2"] = f'0x{readInt4File(f):08X}' 
         h["dbg3"] = f"0b{readInt4File(f):b}" 
 
         data=bytearray(b'1234')

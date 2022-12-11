@@ -31,6 +31,8 @@
 #define MOD_OUT_SYM_F_HZ PROG_LOOP_HZ / MOD_SYMB_LEN_BITS
 #define MOD_FILT_DATA_SZ  MOD_BUFFER_LEN + MOD_RRC_SZ + 1
 
+#define DEMOD_TH_SIGNAL_LEVEL  (1<<5)
+
 #define ADC_BUFFER_LEN 128
 
 #define UART_BAUDRATE 460800
@@ -53,6 +55,8 @@ static enum modem_error_t {
     MODEM_ERR_OK = 0,
     MODEM_BUFFER_FULL = 1,
     MODEM_MOD_GET_SAMPLE_WITHOUT_DATA_VALID = 2,
+    MODEM_DEMOD_BUFFER_FULL = 3,
+    MODEM_DEMOD_DATA_NOT_READY = 4,
 } __modem_err = MODEM_ERR_OK;
 
 /* ******************************* Modulator ******************************* */
@@ -128,21 +132,99 @@ q15_t modulator_get_out_sample(struct modulator_t* self) {
     return ret;
 }
 
+/* ****************************** Demodulator ****************************** */
+enum demodulator_state_t {
+    DEMOD_NO_SIGNAL = 0,
+    DEMOD_PREAMB = 1,
+    DEMOD_SFD = 2,
+    DEMOD_DATA_SAMPLING = 3,
+    DEMOD_DATA_READY = 4,
+};
+
+static struct demodulator_t {
+    q15_t* mf_coeffs;
+    q15_t* bp_coeffs;
+    q15_t window_buffer[MOD_SYMB_LEN_BITS];
+    q15_t mf_data[MOD_FILT_DATA_SZ];
+    q15_t pf_data[MOD_FILT_DATA_SZ];
+    q15_t pf_sq_data[MOD_FILT_DATA_SZ];
+    q15_t pf_sq_bp_data[MOD_FILT_DATA_SZ + MOD_RRC_SZ + 1];
+    bool bits[MODEM_PACKET_BITS];
+    uint16_t bit_i;
+    q15_t det_th;
+    uint16_t wbuff_i;
+    bool out_bit;
+    bool data_valid;
+    enum demodulator_state_t state;
+} demod = {0};
+
+
+void demod_init(struct demodulator_t* self, q15_t det_th, q15_t* mf_coeffs) {
+    self->mf_coeffs = mf_coeffs;
+    self->bp_coeffs = mf_coeffs;
+    self->det_th = det_th;
+    self->wbuff_i = 0;
+    self->data_valid = false;
+    self->bit_i = 0;
+}
+
+bool demod_is_data_available(struct demodulator_t* self) {
+    return self->data_valid;
+}
+
+bool demod_get_bit(struct demodulator_t* self) {
+    if(!demod_is_data_available(self)) {
+        __modem_err = MODEM_DEMOD_DATA_NOT_READY;
+        return false;
+    }
+    self->data_valid = false;
+    return self->out_bit;
+}
+
+bool __demod_is_symbol_detectable(struct demodulator_t* self) {
+    q63_t pow;
+    volatile q15_t min, max, minneg, absmax;
+    uint32_t min_i, max_i;
+    arm_conv_q15(self->window_buffer, MOD_BUFFER_LEN, 
+                 self->mf_coeffs, MOD_RRC_SZ, self->mf_data);
+    arm_power_q15(self->mf_data, MOD_FILT_DATA_SZ, &pow);
+    arm_shift_q15(self->mf_data, 4, self->mf_data,  MOD_FILT_DATA_SZ);
+
+    /* Estimation. */
+    arm_min_q15(self->mf_data, MOD_FILT_DATA_SZ, &min, &min_i);
+    arm_max_q15(self->mf_data, MOD_FILT_DATA_SZ, &max, &max_i);
+    minneg = -min;
+    self->out_bit = max > minneg;
+
+    /* Detection. */
+    header.dbg3 = (pow >> 32) & 0xFFFF;
+    return ((pow >> 32) & 0xFFFF) > self->det_th;
+}
+
+void demod_feed_sample(struct demodulator_t* self, q15_t sample) {
+    bool bit = false;
+    if(self->data_valid) {
+        __modem_err = MODEM_DEMOD_BUFFER_FULL;
+        return;
+    }
+
+    self->window_buffer[self->wbuff_i++] = sample;
+    if (self->wbuff_i == MOD_SYMB_LEN_BITS) {
+        if (__demod_is_symbol_detectable(self)) {
+            self->data_valid = true;
+        }
+        self->wbuff_i = 0; // Start capturing another window.
+    }
+}
+
 /* ******************************* ADC / DAC ******************************* */
 
-uint16_t adc_sample = 0;
+q15_t adc_sample = 0;
 uint16_t dac_sample = 512;
 
 /* ***************************** Data Input Sim **************************** */
 bool data_in = false;
 uint16_t data_in_count = DATA_IN_RESET;
-
-/* ***************************** Filter Coeffs ***************************** */
-q15_t sq_coeffs[] = {
-    0x2000, 0x2000, 0x2000, 0x2000, 0x2000, 0x2000, 0x2000, 0x2000,
-    0x2000, 0x2000, 0x2000, 0x2000, 0x2000, 0x2000, 0x2000, 0x2000,
-};
-
 
 /* ************************************************************************* */
 /*                                    Code                                   */
@@ -156,14 +238,17 @@ int main(void) {
     cyclesCounterInit(EDU_CIAA_NXP_CLOCK_SPEED);
     /* Modulator init */
     modulator_init(&mod, rrc_coeffs);
+    demod_init(&demod, DEMOD_TH_SIGNAL_LEVEL, rrc_coeffs);
+    dacWrite(DAC, 512);  // Start at 0.
     for (;;) {
         cyclesCounterReset();
 
-        /* Send adc data through UART */
-        adc_sample = (((adcRead(CH1) - 512)) << 6);
+        /* Send ADC data through UART. */
+        volatile uint16_t raw_adc = adcRead(CH1);
+        adc_sample = (((raw_adc - 512)) << 6);
         uartWriteByteArray(UART_USB, (uint8_t*)&adc_sample, sizeof(adc_sample));
 
-        /* Handle data in */
+        /* Send Header & Data Packet every DATA_IN_RESET cycles. */
         data_in_count = data_in_count - 1;
         if (data_in_count == 0) {
             data_in_count = DATA_IN_RESET;
@@ -173,16 +258,24 @@ int main(void) {
             header.dbg3 = 0;
         }
 
+        /* Receive UART Requests end enqueue pulses. */
         if(modulator_is_rfd(&mod)) {
             uint8_t recv_by;
             if (uartReadByte(UART_USB, &recv_by)) {
-                header.dbg3 = recv_by;
+                // header.dbg3 = recv_by;
                 modulator_send_by(&mod, recv_by);
             }
         }
 
+        /* Send pulses through DAC when modulator is ready to send. */
         if (modulator_is_data_valid(&mod)) {
             dacWrite(DAC, (modulator_get_out_sample(&mod) >> 6) + 512);
+        }  // Else, line is kept at 0.
+
+
+        demod_feed_sample(&demod, adc_sample);
+        if(demod_is_data_available(&demod)) {  // Symbol was detected.
+            header.dbg2 |= (demod_get_bit(&demod) << header.dbg1++);
         }
 
         while (cyclesCounterRead() < PROG_FREQ_CYCLES)
