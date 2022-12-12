@@ -20,16 +20,16 @@
 #define PROG_LOOP_HZ 8000
 #define PROG_FREQ_CYCLES (EDU_CIAA_NXP_CLOCK_SPEED / PROG_LOOP_HZ)
 
-#define MODEM_NBYTES 4
+#define MODEM_NBYTES 1
 #define MODEM_PRE_BITS 8
 #define MODEM_SFD 1
-#define MODEM_PACKET_BITS MODEM_PRE_BITS + (8 * MODEM_NBYTES)
+#define MODEM_PACKET_BITS (MODEM_PRE_BITS + (8 * MODEM_NBYTES))
 
 #define MOD_SYMB_LEN_BITS 16
 #define MOD_RRC_SZ  RCC_SIZE 
-#define MOD_BUFFER_LEN MOD_SYMB_LEN_BITS * MODEM_PACKET_BITS
-#define MOD_OUT_SYM_F_HZ PROG_LOOP_HZ / MOD_SYMB_LEN_BITS
-#define MOD_FILT_DATA_SZ  MOD_BUFFER_LEN + MOD_RRC_SZ + 1
+#define MOD_BUFFER_LEN (MOD_SYMB_LEN_BITS * MODEM_PACKET_BITS)
+#define MOD_OUT_SYM_F_HZ (PROG_LOOP_HZ / MOD_SYMB_LEN_BITS)
+#define MOD_FILT_DATA_SZ  (MOD_BUFFER_LEN + MOD_RRC_SZ + 1)
 
 #define DEMOD_TH_SIGNAL_LEVEL  (1<<5)
 
@@ -38,7 +38,7 @@
 #define UART_BAUDRATE 460800
 
 /* ***************************** Data Transfer ***************************** */
-const uint16_t DATA_IN_RESET =1024;
+const uint16_t DATA_IN_RESET =512;
 static struct header_struct {
     char head[4];
     uint32_t id;
@@ -89,7 +89,7 @@ void modulator_init(struct modulator_t* self, q15_t* filter_coeffs) {
 
 
 void modulator_data_add(struct modulator_t* self, bool bit) {
-    if (self->buff_i >= MOD_SYMB_LEN_BITS) {
+    if (self->buff_i >= MODEM_PACKET_BITS) {
         __modem_err = MODEM_BUFFER_FULL;
         return;
     }
@@ -109,7 +109,7 @@ void __modulator_filter_data(struct modulator_t* self) {
 }
 
 bool modulator_is_data_valid(struct modulator_t* self) {
-    return self->buff_i == MOD_SYMB_LEN_BITS;
+    return self->buff_i == MODEM_PACKET_BITS;
 }
 
 bool modulator_is_rfd(struct modulator_t* self) {
@@ -118,7 +118,7 @@ bool modulator_is_rfd(struct modulator_t* self) {
 
 q15_t modulator_get_out_sample(struct modulator_t* self) {
     q15_t ret;
-    if (self->buff_i != MOD_SYMB_LEN_BITS) {
+    if (self->buff_i != MODEM_PACKET_BITS) {
         __modem_err = MODEM_MOD_GET_SAMPLE_WITHOUT_DATA_VALID;
         return 0x00;
     }
@@ -266,7 +266,7 @@ int main(void) {
         /* Receive UART Requests end enqueue pulses. */
         if(modulator_is_rfd(&mod)) {
             uint8_t recv_by;
-            if (uartReadByte(UART_USB, &recv_by)) {
+            if (uartReadByte(UART_USB, &recv_by) && (recv_by != '\n')) {
                 // header.dbg3 = recv_by;
                 modulator_send_by(&mod, recv_by);
             }
