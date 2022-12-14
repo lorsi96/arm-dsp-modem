@@ -1,8 +1,6 @@
-# ARM DSP Modem
-
+# CMSIS DSP Modulator
 ## Overview
-The goal of this project is to implement a simple MODEM using the ARM DSP
-library. The general architecture respondos to the following diagram.
+The original goal of this project was to implement a simple MODEM using the CMSIS-DSP library. The general architecture would respond to the following diagram.
 
 ```mermaid
 flowchart LR
@@ -12,6 +10,8 @@ subgraph EmbeddedSystem
 end
 ADC/DAC <--Analog--> Channel
 ```
+
+However, due to a number of issues, only the modulator was implemented.
 
 ## Modem
 ### Modulator
@@ -28,5 +28,8 @@ The modulator is responsible for the following tasks:
 The demodulator is responsible for the following tasks: 
 - Applying the matched filter to the modulated signal captured by the ADC
 - Detecting whether there's signal level or not
-- Syncronizing the signal using a PLL block
+- Syncronizing the modulated input signal 
 - Sampling the matched filter output signal converting it to either 1s or 0s
+
+### Demo
+![demo](images/SDC_ScopeCap.gif)

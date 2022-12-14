@@ -31,14 +31,31 @@
 #define MOD_OUT_SYM_F_HZ (PROG_LOOP_HZ / MOD_SYMB_LEN_BITS)
 #define MOD_FILT_DATA_SZ  (MOD_BUFFER_LEN + MOD_RRC_SZ + 1)
 
-#define DEMOD_TH_SIGNAL_LEVEL  (1<<5)
+#define UART_BAUDRATE 460800
+
+
+#define DEMOD_TH_SIGNAL_LEVEL  800 
 
 #define ADC_BUFFER_LEN 128
 
-#define UART_BAUDRATE 460800
 
+#define DEBUG_SIGNAL(x)  uartWriteByteArray(UART_USB, (uint8_t*)&x, sizeof(x)); header.Ndbg = sizeof(x) / sizeof(x[0]);
+
+#define ADC_DATA_SZ 512
+/* ************************** Debug Signal Buffer ************************** */
+struct {
+    q15_t buff[ADC_DATA_SZ];
+    uint32_t count;
+} __dbg_buffer = {0};
+
+
+void dbg_push(q15_t x) {
+    __dbg_buffer.buff[__dbg_buffer.count++] = x;
+    if (__dbg_buffer.count == ADC_DATA_SZ) {
+        __dbg_buffer.count = 0;
+    }
+}
 /* ***************************** Data Transfer ***************************** */
-const uint16_t DATA_IN_RESET =512;
 static struct header_struct {
     char head[4];
     uint32_t id;
@@ -49,7 +66,8 @@ static struct header_struct {
     uint16_t dbg2;
     uint16_t dbg3;
     char tail[4];
-} header = {"head", 0, DATA_IN_RESET, MOD_FILT_DATA_SZ, PROG_LOOP_HZ, 0, 0, 0, "tail"};
+} header = {
+    "head", 0, ADC_DATA_SZ, MOD_FILT_DATA_SZ, PROG_LOOP_HZ, 0, 0, 0, "tail"};
 
 /* ********************************* System ******************************** */
 static enum modem_error_t {
@@ -69,6 +87,13 @@ static struct modulator_t {
     uint16_t out_i;
 } mod;
 
+/**
+ * @brief Initializes the modulator structure.
+ * @details Pre-fills in the mapped bits used for the preamble and SFD
+ * 
+ * @param self 
+ * @param filter_coeffs 
+ */
 void modulator_init(struct modulator_t* self, q15_t* filter_coeffs) {
     self->filter_coeffs = filter_coeffs;
     self->buff_i = 0;
@@ -86,8 +111,13 @@ void modulator_init(struct modulator_t* self, q15_t* filter_coeffs) {
     }
 }
 
-
-
+/**
+ * @brief Enqueues a bit to be modulated.
+ * @details Simply fills in the correct mapped bit.
+ * 
+ * @param self 
+ * @param bit 
+ */
 void modulator_data_add(struct modulator_t* self, bool bit) {
     if (self->buff_i >= MODEM_PACKET_BITS) {
         __modem_err = MODEM_BUFFER_FULL;
@@ -184,22 +214,27 @@ bool demod_get_bit(struct demodulator_t* self) {
 
 bool __demod_is_symbol_detectable(struct demodulator_t* self) {
     q63_t pow;
-    volatile q15_t min, max, minneg, absmax;
+    q15_t min, max, minneg, absmax;
     uint32_t min_i, max_i;
     arm_conv_q15(self->window_buffer, MOD_BUFFER_LEN, 
                  self->mf_coeffs, MOD_RRC_SZ, self->mf_data);
     arm_power_q15(self->mf_data, MOD_FILT_DATA_SZ, &pow);
-    arm_shift_q15(self->mf_data, 4, self->mf_data,  MOD_FILT_DATA_SZ);
+    // arm_shift_q15(self->mf_data, 4, self->mf_data,  MOD_FILT_DATA_SZ);
 
     /* Estimation. */
     arm_min_q15(self->mf_data, MOD_FILT_DATA_SZ, &min, &min_i);
     arm_max_q15(self->mf_data, MOD_FILT_DATA_SZ, &max, &max_i);
     minneg = -min;
     self->out_bit = max > minneg;
+    for(uint8_t i=0; i<16; i++)
+        // dbg_push(self->mf_data[i]);
 
+    header.dbg1 = minneg;
+    header.dbg3 = max;
+    header.dbg2 = header.dbg3 > header.dbg2 ? header.dbg3 : header.dbg2 ;
+    dbg_push(minneg);
     /* Detection. */
-    header.dbg3 = (pow >> 32) & 0xFFFF;
-    return ((pow >> 32) & 0xFFFF) > self->det_th;
+    return ((pow >> 28) & 0xFFFF) > self->det_th;
 }
 
 void demod_feed_sample(struct demodulator_t* self, q15_t sample) {
@@ -225,7 +260,8 @@ uint16_t dac_sample = 512;
 
 /* ***************************** Data Input Sim **************************** */
 bool data_in = false;
-uint16_t data_in_count = DATA_IN_RESET;
+uint16_t data_in_count = ADC_DATA_SZ;
+
 
 /* ************************************************************************* */
 /*                                    Code                                   */
@@ -245,22 +281,16 @@ int main(void) {
         cyclesCounterReset();
 
         /* Send ADC data through UART. */
-        volatile uint16_t raw_adc = adcRead(CH1);
+        uint16_t raw_adc = adcRead(CH1);
         adc_sample = (((raw_adc - 512)) << 6);
         uartWriteByteArray(UART_USB, (uint8_t*)&adc_sample, sizeof(adc_sample));
 
-        /* Send Header & Data Packet every DATA_IN_RESET cycles. */
+        /* Send Header & Data Packet every ADC_DATA_SZ cycles. */
         data_in_count = data_in_count - 1;
         if (data_in_count == 0) {
-            data_in_count = DATA_IN_RESET;
-            uartWriteByteArray(UART_USB, 
-                          (uint8_t*)&mod.filtered_data, 
-                          sizeof(mod.filtered_data));
-            header.Ndbg = sizeof(mod.filtered_data) / sizeof(mod.filtered_data[0]);
+            data_in_count = ADC_DATA_SZ;
+            DEBUG_SIGNAL(__dbg_buffer.buff);
             uartWriteByteArray(UART_USB, (uint8_t*)&header, sizeof(header));
-            header.dbg1 = 0;
-            header.dbg2 = 0;
-            header.dbg3 = 0;
         }
 
         /* Receive UART Requests end enqueue pulses. */

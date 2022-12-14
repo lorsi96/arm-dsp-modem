@@ -97,15 +97,25 @@ class SerialHeaderManager:
 # ********************************* Plotting ******************************** #
 fig = plt.figure(1)
 
+
 adcAxe = fig.add_subplot ( 2,1,1                  )
 adcLn, = plt.plot        ( [],[],'r-',linewidth=4 )
 adcAxe.grid              ( True                   )
 adcAxe.set_ylim          ( -1.65 ,1.65            )
+adcAxe.set_title('Scope')
+adcAxe.set_xlabel('Time [Sec]')
+adcAxe.set_ylabel('Mag')
 
 fftAxe = fig.add_subplot ( 2,1,2                  )
 fftLn, = plt.plot        ( [],[],'b-',linewidth=4 )
 fftAxe.grid              ( True                   )
-fftAxe.set_ylim          ( 0 ,0.25                )
+# fftAxe.set_ylim          ( 0 ,0.25                )
+fftAxe.set_ylim          ( -0.05 ,0.05            )
+fftAxe.set_title('Dbg Signal')
+fftAxe.set_xlabel('Time [Sec]')
+fftAxe.set_ylabel('Mag')
+
+plt.tight_layout()
 
 header = {
     "head": b"head", 
@@ -126,7 +136,7 @@ header_spec = {
     "fs": stdint_read, 
     "dgb1": stdint_read, 
     "dgb2": stdint_read, 
-    "dgb3": stdint_read,  
+    "dgb3": lambda x: '0x' + hex(stdint_read(x)) ,  
 }
 
 
@@ -157,7 +167,7 @@ def update(t):
     adcLn.set_data  ( time ,adc  )
 
     fftAxe.set_xlim (0 , time2[-1])
-    fftAxe.set_ylim (np.min(dbg) * 1.05, np.max(dbg) * 1.05)
+    # fftAxe.set_ylim (min(np.min(dbg) * 1.05, 0),  max(np.max(dbg) * 1.05, 0))
     fftLn.set_data (time2, dbg)
 
     rec=np.concatenate((rec,((adc/1.65)*2**(15-1)).astype(np.int16)))
